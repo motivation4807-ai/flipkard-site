@@ -1,0 +1,94 @@
+services:
+  web:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+      CATALOG_API_URL: http://api:4000/api/products
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    init: true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/"]
+      interval: 20s
+      timeout: 3s
+      retries: 3
+      start_period: 25s
+
+  api:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgres://catalog:${POSTGRES_PASSWORD:-catalog-dev}@db:5432/catalog
+      REDIS_URL: redis://redis:6379/0
+      PG_POOL_MAX: 12
+      TRUST_PROXY_HOPS: 1
+      API_RATE_LIMIT_PER_MINUTE: 1200
+      LOG_LEVEL: info
+    expose:
+      - "4000"
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    init: true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:4000/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+  seed:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    command: ["npm", "run", "seed"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://catalog:${POSTGRES_PASSWORD:-catalog-dev}@db:5432/catalog
+      CATALOG_JSON: /data/products.json
+      LOG_LEVEL: info
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: catalog
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-catalog-dev}
+    volumes:
+      - catalog-data:/var/lib/postgresql/data
+      - ../backend/sql/001_schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U catalog -d catalog"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  catalog-data:
